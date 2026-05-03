@@ -1,0 +1,33 @@
+{
+  "name": "kos-finance",
+  "version": "1.0.0",
+  "description": "Aplikasi Keuangan Kos - Manajemen keuangan bersama untuk penghuni kos",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "bot": "node src/bot.js",
+    "setup": "node src/setup.js"
+  },
+  "keywords": [
+    "finance",
+    "kos",
+    "telegram-bot",
+    "expense-tracker"
+  ],
+  "author": "Andik",
+  "license": "MIT",
+  "dependencies": {
+    "@google/generative-ai": "^0.24.1",
+    "better-sqlite3": "^12.9.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "exceljs": "^4.4.0",
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "node-cron": "^4.2.1",
+    "node-telegram-bot-api": "^0.67.0",
+    "sharp": "^0.34.5",
+    "uuid": "^14.0.0"
+  }
+}

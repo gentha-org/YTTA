@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kos Finance - Manajemen Keuangan Bersama</title>
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar Navigation -->
+        <nav class="sidebar">
+            <div class="logo">
+                <span class="icon">🏠</span>
+                <h1>Kos Finance</h1>
+            </div>
+            
+            <ul class="nav-links">
+                <li class="active"><a href="#dashboard" data-target="dashboard"><span class="icon">📊</span> Dashboard</a></li>
+                <li><a href="#transaksi" data-target="transaksi"><span class="icon">📝</span> Transaksi</a></li>
+                <li><a href="#iuran" data-target="iuran"><span class="icon">💳</span> Iuran (Kas)</a></li>
+                <li><a href="#hutang" data-target="hutang"><span class="icon">💸</span> Catatan Hutang</a></li>
+                <li><a href="#pengaturan" data-target="pengaturan"><span class="icon">⚙️</span> Pengaturan</a></li>
+            </ul>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <header class="top-bar">
+                <div class="greeting">
+                    <h2>Halo, Warga Kos! 👋</h2>
+                    <p id="current-date">Loading date...</p>
+                </div>
+                
+                <div class="actions">
+                    <button class="btn btn-primary" onclick="openModal('add-expense-modal')">
+                        <span class="icon">➕</span> Tambah Pengeluaran
+                    </button>
+                    <button class="btn btn-secondary" onclick="exportExcel()">
+                        <span class="icon">📥</span> Export Excel
+                    </button>
+                </div>
+            </header>
+
+            <!-- Views -->
+            <div id="view-dashboard" class="view active">
+                
+                <!-- Quick Stats -->
+                <div class="stats-grid">
+                    <div class="stat-card balance-card">
+                        <div class="stat-icon">💰</div>
+                        <div class="stat-info">
+                            <p class="stat-label">Saldo Patungan Saat Ini</p>
+                            <h3 class="stat-value" id="stat-balance">Rp 0</h3>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">📈</div>
+                        <div class="stat-info">
+                            <p class="stat-label">Pengeluaran Bulan Ini</p>
+                            <h3 class="stat-value text-danger" id="stat-month-total">Rp 0</h3>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card">
+                        <div class="stat-icon">📊</div>
+                        <div class="stat-info">
+                            <p class="stat-label">Pengeluaran Minggu Ini</p>
+                            <h3 class="stat-value text-warning" id="stat-week-total">Rp 0</h3>
+                        </div>
+                    </div>
+                    
+                    <div class="stat-card budget-card">
+                        <div class="stat-icon">🎯</div>
+                        <div class="stat-info">
+                            <p class="stat-label">Budget Bulanan (Terpakai)</p>
+                            <h3 class="stat-value" id="stat-budget-pct">0%</h3>
+                            <div class="progress-bar-container">
+                                <div class="progress-bar" id="budget-progress" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Charts Section -->
+                <div class="charts-grid section-margin">
+                    <div class="panel chart-panel span-2">
+                        <div class="panel-header">
+                            <h3>Trend Pengeluaran Harian (30 Hari Terakhir)</h3>
+                        </div>
+                        <div class="panel-body chart-container">
+                            <canvas id="trendChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <div class="panel chart-panel">
+                        <div class="panel-header">
+                            <h3>Pengeluaran per Kategori</h3>
+                        </div>
+                        <div class="panel-body chart-container center-chart">
+                            <canvas id="categoryChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Bottom Section -->
+                <div class="bottom-grid section-margin">
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h3>Transaksi Terbaru</h3>
+                            <a href="#transaksi" class="link-btn" onclick="switchView('transaksi')">Lihat Semua</a>
+                        </div>
+                        <div class="panel-body overflow-auto">
+                            <table class="table" id="recent-expenses-table">
+                                <thead>
+                                    <tr>
+                                        <th>Tanggal</th>
+                                        <th>Keterangan</th>
+                                        <th>Kategori</th>
+                                        <th class="text-right">Jumlah</th>
+                                        <th>Oleh</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr><td colspan="5" class="text-center">Loading...</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                    
+                    <div class="panel">
+                        <div class="panel-header">
+                            <h3>Pengeluaran per Anggota</h3>
+                        </div>
+                        <div class="panel-body chart-container">
+                            <canvas id="memberChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: Transaksi -->
+            <div id="view-transaksi" class="view">
+                <div class="panel full-height">
+                    <div class="panel-header with-filters">
+                        <h3>Daftar Semua Transaksi</h3>
+                        <div class="filters">
+                            <select id="filter-category" class="input-field" onchange="loadExpenses()">
+                                <option value="">Semua Kategori</option>
+                                <!-- Categories populated via JS -->
+                            </select>
+                        </div>
+                    </div>
+                    <div class="panel-body overflow-auto">
+                        <table class="table" id="all-expenses-table">
+                            <thead>
+                                <tr>
+                                    <th>Tanggal</th>
+                                    <th>Keterangan</th>
+                                    <th>Kategori</th>
+                                    <th class="text-right">Jumlah (Rp)</th>
+                                    <th>Dibayar Oleh</th>
+                                    <th>Sumber</th>
+                                    <th>Aksi</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <!-- Data populated via JS -->
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+             <!-- VIEW: Iuran -->
+             <div id="view-iuran" class="view">
+                <div class="panel">
+                    <div class="panel-header">
+                        <h3>Status Iuran Bulan Ini</h3>
+                        <button class="btn btn-primary btn-sm" onclick="openModal('add-contribution-modal')">
+                            Catat Iuran Masuk
+                        </button>
+                    </div>
+                    <div class="panel-body">
+                        <div class="contribution-cards" id="contribution-status">
+                            <!-- Populated via JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: Hutang -->
+            <div id="view-hutang" class="view">
+                <div class="panel">
+                     <div class="panel-header">
+                        <h3>Catatan Hutang Antar Anggota</h3>
+                        <button class="btn btn-primary btn-sm" onclick="openModal('add-debt-modal')">
+                            Tambah Hutang
+                        </button>
+                    </div>
+                    <div class="panel-body">
+                        <div id="debts-list" class="debts-grid">
+                            <!-- Populated via JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- VIEW: Pengaturan -->
+            <div id="view-pengaturan" class="view">
+                <div class="panel max-w-md">
+                    <div class="panel-header">
+                        <h3>Pengaturan Aplikasi</h3>
+                    </div>
+                    <div class="panel-body">
+                        <form id="settings-form" onsubmit="saveSettings(event)">
+                            <div class="form-group">
+                                <label for="set-budget">Budget Pengeluaran Bulanan (Rp)</label>
+                                <input type="number" id="set-budget" class="input-field" required>
+                                <small class="text-muted">Untuk peringatan jika pengeluaran melebihi batas.</small>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label for="set-contribution">Target Iuran per Orang (Rp)</label>
+                                <input type="number" id="set-contribution" class="input-field" required>
+                            </div>
+
+                            <button type="submit" class="btn btn-primary full-width mt-4">Simpan Pengaturan</button>
+                        </form>
+                    </div>
+                </div>
+            </div>
+
+        </main>
+    </div>
+
+    <!-- MODALS -->
+    <!-- Add Expense Modal -->
+    <div id="add-expense-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Tambah Pengeluaran</h3>
+                <span class="close-btn" onclick="closeModal('add-expense-modal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="tabs mb-4">
+                    <button class="tab-btn active" onclick="switchTab('expense-manual')">Input Manual</button>
+                    <button class="tab-btn" onclick="switchTab('expense-scan')">Scan Nota (OCR)</button>
+                </div>
+                
+                <!-- Manual Form -->
+                <form id="expense-manual" class="tab-content active" onsubmit="submitExpense(event)">
+                    <div class="form-group">
+                        <label>Siapa yang bayar? (Talangan)</label>
+                        <select id="exp-member" class="input-field" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Keterangan</label>
+                        <input type="text" id="exp-desc" class="input-field" placeholder="Cth: Beli sabun cuci" required>
+                    </div>
+                    <div class="form-grid">
+                        <div class="form-group">
+                            <label>Jumlah (Rp)</label>
+                            <input type="number" id="exp-amount" class="input-field" placeholder="15000" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Kategori</label>
+                            <select id="exp-cat" class="input-field">
+                                <option value="">Auto-deteksi</option>
+                                <option value="Makanan & Minuman">Makanan & Minuman</option>
+                                <option value="Listrik">Listrik</option>
+                                <option value="Air">Air</option>
+                                <option value="Internet/WiFi">Internet/WiFi</option>
+                                <option value="Kebersihan">Kebersihan</option>
+                                <option value="Perlengkapan Kos">Perlengkapan Kos</option>
+                                <option value="Kesehatan">Kesehatan</option>
+                                <option value="Lainnya">Lainnya</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="form-group">
+                        <label>Tanggal</label>
+                        <input type="date" id="exp-date" class="input-field" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary full-width">Simpan</button>
+                </form>
+
+                <!-- Scan Form -->
+                <div id="expense-scan" class="tab-content">
+                     <form id="scan-form" onsubmit="submitScan(event)">
+                        <div class="form-group">
+                            <label>Siapa yang bayar?</label>
+                            <select id="scan-member" class="input-field" required></select>
+                        </div>
+                        <div class="form-group">
+                            <label>Upload Foto Nota</label>
+                            <input type="file" id="scan-file" class="input-field" accept="image/*" required>
+                        </div>
+                        <button type="submit" class="btn btn-secondary full-width" id="btn-scan">
+                            <span class="icon">📷</span> Scan Sekarang
+                        </button>
+                    </form>
+                    <div id="scan-result" class="mt-4 hidden">
+                        <!-- Result parsing will show here, then user confirms -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Contribution Modal -->
+     <div id="add-contribution-modal" class="modal">
+        <div class="modal-content max-w-sm">
+            <div class="modal-header">
+                <h3>Catat Iuran Masuk</h3>
+                <span class="close-btn" onclick="closeModal('add-contribution-modal')">&times;</span>
+            </div>
+            <div class="modal-body">
+                <form id="contribution-form" onsubmit="submitContribution(event)">
+                    <div class="form-group">
+                        <label>Anggota</label>
+                        <select id="contrib-member" class="input-field" required></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Jumlah (Rp)</label>
+                        <input type="number" id="contrib-amount" class="input-field" required>
+                    </div>
+                    <button type="submit" class="btn btn-primary full-width">Simpan Iuran</button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
