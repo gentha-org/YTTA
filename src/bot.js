@@ -3,12 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const { 
     memberQueries, expenseQueries, contributionQueries, 
-    debtQueries, getSetting, setSetting, getBalance, getDashboardData 
+    debtQueries, getSetting, setSetting, getBalance 
 } = require('./database');
 const { scanReceipt, parseManualInput, autoCategorizee } = require('./ocr');
 const { generateReport } = require('./excel');
 
-// Pastikan folder uploads ada
+// Pastikan folder uploads ada (Untuk temporary file)
 const uploadsDir = path.join(__dirname, '..', 'uploads', 'receipts');
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
@@ -68,22 +68,21 @@ Cukup kirim foto nota/struk ke bot ini!
     // ============================================
     // Auto-register: /daftar
     // ============================================
-    bot.onText(/\/daftar/, (msg) => {
+    bot.onText(/\/daftar/, async (msg) => {
         const chatId = msg.chat.id;
         const telegramId = String(msg.from.id);
         const username = msg.from.username || '';
         const name = msg.from.first_name;
 
         // Check if already registered
-        const existing = memberQueries.getByTelegramId.get(telegramId);
+        const existing = await memberQueries.getByTelegramId(telegramId);
         if (existing) {
             bot.sendMessage(chatId, `✅ Kamu sudah terdaftar sebagai *${existing.name}*`, { parse_mode: 'Markdown' });
             return;
         }
 
         // Try to match by name
-        const members = memberQueries.getAll.all();
-        const memberNames = members.map(m => m.name).join(', ');
+        const members = await memberQueries.getAll();
 
         bot.sendMessage(chatId, 
 `👋 Halo ${name}!
@@ -95,13 +94,13 @@ Balas dengan angka (1-${members.length}):`,
         );
 
         // Listen for reply
-        bot.once('message', (reply) => {
+        bot.once('message', async (reply) => {
             if (reply.from.id !== msg.from.id) return;
             
             const choice = parseInt(reply.text);
             if (choice >= 1 && choice <= members.length) {
                 const selected = members[choice - 1];
-                memberQueries.updateTelegramId.run(telegramId, username, selected.id);
+                await memberQueries.updateTelegramId(telegramId, username, selected.id);
                 bot.sendMessage(chatId, `✅ Berhasil! Kamu terdaftar sebagai *${selected.name}*`, { parse_mode: 'Markdown' });
             } else {
                 bot.sendMessage(chatId, '❌ Pilihan tidak valid. Coba lagi dengan /daftar');
@@ -112,12 +111,12 @@ Balas dengan angka (1-${members.length}):`,
     // ============================================
     // /tambah [jumlah] [keterangan]
     // ============================================
-    bot.onText(/\/tambah (.+)/, (msg, match) => {
+    bot.onText(/\/tambah (.+)/, async (msg, match) => {
         const chatId = msg.chat.id;
         const telegramId = String(msg.from.id);
         const input = match[1];
         
-        const member = memberQueries.getByTelegramId.get(telegramId);
+        const member = await memberQueries.getByTelegramId(telegramId);
         if (!member) {
             bot.sendMessage(chatId, '⚠️ Kamu belum terdaftar! Gunakan /daftar dulu.');
             return;
@@ -133,12 +132,12 @@ Balas dengan angka (1-${members.length}):`,
         const today = new Date().toISOString().slice(0, 10);
 
         try {
-            expenseQueries.insert.run(
+            await expenseQueries.insert(
                 today, parsed.description, category, parsed.amount,
                 member.id, null, null, 'manual'
             );
 
-            const balance = getBalance();
+            const balance = await getBalance();
             
             bot.sendMessage(chatId, 
 `✅ *Pengeluaran tercatat!*
@@ -168,7 +167,7 @@ Balas dengan angka (1-${members.length}):`,
         const chatId = msg.chat.id;
         const telegramId = String(msg.from.id);
 
-        const member = memberQueries.getByTelegramId.get(telegramId);
+        const member = await memberQueries.getByTelegramId(telegramId);
         if (!member) {
             bot.sendMessage(chatId, '⚠️ Kamu belum terdaftar! Gunakan /daftar dulu.');
             return;
@@ -176,6 +175,7 @@ Balas dengan angka (1-${members.length}):`,
 
         bot.sendMessage(chatId, '🔍 Sedang scan nota... Mohon tunggu ⏳');
 
+        let localPath = null;
         try {
             // Download photo (get highest resolution)
             const photoId = msg.photo[msg.photo.length - 1].file_id;
@@ -183,9 +183,9 @@ Balas dengan angka (1-${members.length}):`,
             const filePath = file.file_path;
             const downloadUrl = `https://api.telegram.org/file/bot${process.env.TELEGRAM_BOT_TOKEN}/${filePath}`;
 
-            // Download to local
+            // Download to local temporarily
             const ext = path.extname(filePath) || '.jpg';
-            const localPath = path.join(uploadsDir, `receipt_${Date.now()}${ext}`);
+            localPath = path.join(uploadsDir, `receipt_${Date.now()}${ext}`);
             
             const https = require('https');
             const fileStream = fs.createWriteStream(localPath);
@@ -200,8 +200,12 @@ Balas dengan angka (1-${members.length}):`,
                 }).on('error', reject);
             });
 
-            // Scan with Gemini Vision
+            // Scan with Gemini Vision (and upload to ImgBB inside scanReceipt)
             const result = await scanReceipt(localPath);
+
+            // Clean up temporary file
+            try { fs.unlinkSync(localPath); } catch (e) {}
+            localPath = null;
 
             if (!result.success) {
                 bot.sendMessage(chatId, `❌ Gagal scan nota: ${result.error}\n\nCoba kirim foto yang lebih jelas, atau input manual:\n/tambah [jumlah] [keterangan]`);
@@ -234,7 +238,7 @@ Balas *YA* untuk simpan, atau *TIDAK* untuk batal.`,
             );
 
             // Wait for confirmation
-            bot.once('message', (reply) => {
+            bot.once('message', async (reply) => {
                 if (reply.from.id !== msg.from.id) return;
                 
                 const answer = reply.text.toLowerCase().trim();
@@ -244,13 +248,16 @@ Balas *YA* untuk simpan, atau *TIDAK* untuk batal.`,
                     const category = data.category_suggestion || 'Lainnya';
                     const amount = data.total || 0;
                     const items = JSON.stringify(data.items || []);
+                    
+                    // receipt_url is obtained from ImgBB via scanReceipt
+                    const receiptImage = data.receipt_url || null;
 
-                    expenseQueries.insert.run(
+                    await expenseQueries.insert(
                         date, description, category, amount,
-                        member.id, localPath, items, 'scan'
+                        member.id, receiptImage, items, 'scan'
                     );
 
-                    const balance = getBalance();
+                    const balance = await getBalance();
 
                     bot.sendMessage(chatId, 
 `✅ *Pengeluaran tersimpan!*
@@ -269,6 +276,9 @@ Balas *YA* untuk simpan, atau *TIDAK* untuk batal.`,
             });
 
         } catch (err) {
+            if (localPath) {
+                try { fs.unlinkSync(localPath); } catch (e) {}
+            }
             console.error('Photo handler error:', err);
             bot.sendMessage(chatId, '❌ Error memproses foto: ' + err.message);
         }
@@ -277,10 +287,10 @@ Balas *YA* untuk simpan, atau *TIDAK* untuk batal.`,
     // ============================================
     // /saldo - Check balance
     // ============================================
-    bot.onText(/\/saldo/, (msg) => {
+    bot.onText(/\/saldo/, async (msg) => {
         const chatId = msg.chat.id;
-        const balance = getBalance();
-        const budget = parseFloat(getSetting('monthly_budget')) || 0;
+        const balance = await getBalance();
+        const budget = parseFloat(await getSetting('monthly_budget')) || 0;
         const currentMonth = new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
         
         let budgetInfo = '';
@@ -304,12 +314,13 @@ Balas *YA* untuk simpan, atau *TIDAK* untuk batal.`,
     // ============================================
     // /pengeluaran - This month's expenses
     // ============================================
-    bot.onText(/\/pengeluaran/, (msg) => {
+    bot.onText(/\/pengeluaran/, async (msg) => {
         const chatId = msg.chat.id;
-        const categoryData = expenseQueries.getCategorySummary.all();
-        const memberData = expenseQueries.getMemberSummary.all();
+        const categoryData = await expenseQueries.getCategorySummary();
+        const memberData = await expenseQueries.getMemberSummary();
         const currentMonth = new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
-        const monthTotal = expenseQueries.getThisMonthTotal.get()?.total || 0;
+        const monthTotalRow = await expenseQueries.getThisMonthTotal();
+        const monthTotal = monthTotalRow?.total || 0;
 
         let categoryText = categoryData.map(c => 
             `  🏷️ ${c.category}: Rp ${c.total.toLocaleString('id-ID')} (${c.count}x)`
@@ -337,10 +348,11 @@ ${memberText}`,
     // ============================================
     // /minggu - This week's expenses
     // ============================================
-    bot.onText(/\/minggu/, (msg) => {
+    bot.onText(/\/minggu/, async (msg) => {
         const chatId = msg.chat.id;
-        const weekTotal = expenseQueries.getThisWeekTotal.get()?.total || 0;
-        const recent = expenseQueries.getRecent.all(10);
+        const weekTotalRow = await expenseQueries.getThisWeekTotal();
+        const weekTotal = weekTotalRow?.total || 0;
+        const recent = await expenseQueries.getRecent(10);
         
         let recentText = recent.map((e, i) => 
             `  ${i + 1}. ${e.description} — Rp ${e.amount.toLocaleString('id-ID')} (${e.paid_by_name || '-'})`
@@ -361,12 +373,12 @@ ${recentText}`,
     // ============================================
     // /iuran - Contribution status
     // ============================================
-    bot.onText(/\/iuran/, (msg) => {
+    bot.onText(/\/iuran/, async (msg) => {
         const chatId = msg.chat.id;
         const currentMonth = new Date().toISOString().slice(0, 7);
         const monthName = new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
-        const status = contributionQueries.getStatusByMonth.all(currentMonth);
-        const contribution = parseFloat(getSetting('monthly_contribution')) || 0;
+        const status = await contributionQueries.getStatusByMonth(currentMonth);
+        const contribution = parseFloat(await getSetting('monthly_contribution')) || 0;
 
         let statusText = status.map(s => {
             const icon = s.paid ? '✅' : '❌';
@@ -389,17 +401,17 @@ ${statusText}`,
     // ============================================
     // /bayar [jumlah] - Record contribution
     // ============================================
-    bot.onText(/\/bayar(?:\s+(\d+))?/, (msg, match) => {
+    bot.onText(/\/bayar(?:\s+(\d+))?/, async (msg, match) => {
         const chatId = msg.chat.id;
         const telegramId = String(msg.from.id);
         
-        const member = memberQueries.getByTelegramId.get(telegramId);
+        const member = await memberQueries.getByTelegramId(telegramId);
         if (!member) {
             bot.sendMessage(chatId, '⚠️ Kamu belum terdaftar! Gunakan /daftar dulu.');
             return;
         }
 
-        const amount = match[1] ? parseInt(match[1]) : parseFloat(getSetting('monthly_contribution')) || 0;
+        const amount = match[1] ? parseInt(match[1]) : parseFloat(await getSetting('monthly_contribution')) || 0;
         if (amount <= 0) {
             bot.sendMessage(chatId, '❌ Masukkan jumlah iuran: /bayar [jumlah]\nContoh: /bayar 200000');
             return;
@@ -408,7 +420,7 @@ ${statusText}`,
         const currentMonth = new Date().toISOString().slice(0, 7);
 
         try {
-            contributionQueries.insert.run(member.id, amount, currentMonth, null);
+            await contributionQueries.insert(member.id, amount, currentMonth, null);
             
             bot.sendMessage(chatId, 
 `✅ *Iuran Tercatat!*
@@ -452,9 +464,9 @@ Terima kasih sudah bayar iuran! 🙏`,
     // ============================================
     // /hutang - Check debts
     // ============================================
-    bot.onText(/\/hutang/, (msg) => {
+    bot.onText(/\/hutang/, async (msg) => {
         const chatId = msg.chat.id;
-        const debts = debtQueries.getActive.all();
+        const debts = await debtQueries.getActive();
 
         if (debts.length === 0) {
             bot.sendMessage(chatId, '✅ Tidak ada hutang aktif! 🎉');
@@ -478,9 +490,9 @@ Untuk lunas, hubungi admin.`,
     // ============================================
     // /anggota - List members  
     // ============================================
-    bot.onText(/\/anggota/, (msg) => {
+    bot.onText(/\/anggota/, async (msg) => {
         const chatId = msg.chat.id;
-        const members = memberQueries.getAll.all();
+        const members = await memberQueries.getAll();
 
         let memberText = members.map((m, i) => {
             const status = m.telegram_id ? '✅ Terdaftar' : '❌ Belum daftar';
@@ -521,18 +533,18 @@ Belum terdaftar? Gunakan /daftar`,
     // ============================================
     // /setiuran [jumlah] - Set monthly contribution
     // ============================================
-    bot.onText(/\/setiuran (\d+)/, (msg, match) => {
+    bot.onText(/\/setiuran (\d+)/, async (msg, match) => {
         const amount = parseInt(match[1]);
-        setSetting('monthly_contribution', amount);
+        await setSetting('monthly_contribution', amount);
         bot.sendMessage(msg.chat.id, `✅ Iuran bulanan diset: *Rp ${amount.toLocaleString('id-ID')}* /orang`, { parse_mode: 'Markdown' });
     });
 
     // ============================================
     // /setbudget [jumlah] - Set monthly budget
     // ============================================
-    bot.onText(/\/setbudget (\d+)/, (msg, match) => {
+    bot.onText(/\/setbudget (\d+)/, async (msg, match) => {
         const amount = parseInt(match[1]);
-        setSetting('monthly_budget', amount);
+        await setSetting('monthly_budget', amount);
         bot.sendMessage(msg.chat.id, `✅ Budget bulanan diset: *Rp ${amount.toLocaleString('id-ID')}*`, { parse_mode: 'Markdown' });
     });
 

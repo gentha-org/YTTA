@@ -15,11 +15,11 @@ function initScheduler(telegramBot) {
     // ============================================
     // Reminder Iuran - Setiap tanggal 1, jam 09:00
     // ============================================
-    cron.schedule('0 9 1 * *', () => {
+    cron.schedule('0 9 1 * *', async () => {
         const currentMonth = new Date().toISOString().slice(0, 7);
         const monthName = new Date().toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
-        const status = contributionQueries.getStatusByMonth.all(currentMonth);
-        const contribution = parseFloat(getSetting('monthly_contribution')) || 0;
+        const status = await contributionQueries.getStatusByMonth(currentMonth);
+        const contribution = parseFloat(await getSetting('monthly_contribution')) || 0;
 
         const unpaid = status.filter(s => !s.paid);
         if (unpaid.length === 0) return;
@@ -43,9 +43,9 @@ Silakan bayar dan catat dengan /bayar [jumlah] 🙏`,
     // ============================================
     // Reminder Iuran - Setiap tanggal 5, 10, 15 jam 09:00
     // ============================================
-    cron.schedule('0 9 5,10,15 * *', () => {
+    cron.schedule('0 9 5,10,15 * *', async () => {
         const currentMonth = new Date().toISOString().slice(0, 7);
-        const status = contributionQueries.getStatusByMonth.all(currentMonth);
+        const status = await contributionQueries.getStatusByMonth(currentMonth);
         const unpaid = status.filter(s => !s.paid);
         
         if (unpaid.length === 0) return;
@@ -60,10 +60,11 @@ Silakan bayar dan catat dengan /bayar [jumlah] 🙏`,
     // ============================================
     // Laporan Mingguan - Setiap Minggu jam 20:00
     // ============================================
-    cron.schedule('0 20 * * 0', () => {
-        const weekTotal = expenseQueries.getThisWeekTotal.get()?.total || 0;
-        const categoryData = expenseQueries.getCategorySummary.all();
-        const memberData = expenseQueries.getMemberSummary.all();
+    cron.schedule('0 20 * * 0', async () => {
+        const weekTotalRow = await expenseQueries.getThisWeekTotal();
+        const weekTotal = weekTotalRow?.total || 0;
+        const categoryData = await expenseQueries.getCategorySummary();
+        const memberData = await expenseQueries.getMemberSummary();
 
         let categoryText = categoryData.slice(0, 5).map(c => 
             `  🏷️ ${c.category}: Rp ${c.total.toLocaleString('id-ID')}`
@@ -87,11 +88,12 @@ ${categoryText}
     // ============================================
     // Budget Warning - Cek setiap hari jam 21:00
     // ============================================
-    cron.schedule('0 21 * * *', () => {
-        const budget = parseFloat(getSetting('monthly_budget')) || 0;
+    cron.schedule('0 21 * * *', async () => {
+        const budget = parseFloat(await getSetting('monthly_budget')) || 0;
         if (budget <= 0) return;
 
-        const monthTotal = expenseQueries.getThisMonthTotal.get()?.total || 0;
+        const monthTotalRow = await expenseQueries.getThisMonthTotal();
+        const monthTotal = monthTotalRow?.total || 0;
         const percentage = Math.round((monthTotal / budget) * 100);
 
         if (percentage >= 90 && percentage < 100) {

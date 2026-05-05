@@ -17,6 +17,27 @@ async function scanReceipt(imagePath) {
         const base64Image = imageBuffer.toString('base64');
         const mimeType = getMimeType(imagePath);
 
+        // Upload to ImgBB
+        let receiptUrl = null;
+        const imgbbKey = process.env.IMGBB_API_KEY;
+        if (imgbbKey && !imgbbKey.startsWith('GANTI_')) {
+            try {
+                const formData = new URLSearchParams();
+                formData.append('key', imgbbKey);
+                formData.append('image', base64Image);
+                const res = await fetch('https://api.imgbb.com/1/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                const imgData = await res.json();
+                if (imgData && imgData.data && imgData.data.url) {
+                    receiptUrl = imgData.data.url;
+                }
+            } catch (err) {
+                console.error("ImgBB upload error:", err.message);
+            }
+        }
+
         const prompt = `Kamu adalah asisten yang ahli membaca nota/struk belanja Indonesia.
 Analisis gambar nota/struk ini dan extract informasi dengan format JSON berikut:
 
@@ -65,6 +86,9 @@ PENTING:
         
         // Try to parse JSON
         const parsed = JSON.parse(jsonStr.trim());
+        if (receiptUrl) {
+            parsed.receipt_url = receiptUrl;
+        }
         
         return {
             success: true,

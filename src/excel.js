@@ -57,16 +57,16 @@ async function generateReport(month = null) {
     if (month) {
         const startDate = `${month}-01`;
         const endDate = `${month}-31`;
-        expenses = expenseQueries.getByDateRange.all(startDate, endDate);
+        expenses = await expenseQueries.getByDateRange(startDate, endDate);
     } else {
-        expenses = expenseQueries.getAll.all();
+        expenses = await expenseQueries.getAll();
     }
 
     let totalAmount = 0;
     expenses.forEach((exp, i) => {
         const row = wsTransactions.addRow([
             i + 1,
-            exp.date,
+            exp.date.toISOString ? exp.date.toISOString().slice(0, 10) : exp.date,
             exp.description,
             exp.category,
             exp.amount,
@@ -125,7 +125,7 @@ async function generateReport(month = null) {
         cell.border = borders;
     });
 
-    const weeklyData = expenseQueries.getWeeklySummary.all();
+    const weeklyData = await expenseQueries.getWeeklySummary();
     weeklyData.forEach((w, i) => {
         const row = wsWeekly.addRow([w.week, w.week_start, w.week_end, w.total]);
         row.eachCell(cell => { cell.border = borders; });
@@ -162,7 +162,7 @@ async function generateReport(month = null) {
         cell.border = borders;
     });
 
-    const memberData = expenseQueries.getMemberSummary.all();
+    const memberData = await expenseQueries.getMemberSummary();
     memberData.forEach((m, i) => {
         const avg = m.count > 0 ? Math.round(m.total / m.count) : 0;
         const row = wsMember.addRow([m.name, m.total, m.count, avg]);
@@ -195,7 +195,7 @@ async function generateReport(month = null) {
         cell.border = borders;
     });
 
-    const catData = expenseQueries.getCategorySummary.all();
+    const catData = await expenseQueries.getCategorySummary();
     catData.forEach((c, i) => {
         const row = wsCategory.addRow([c.category, c.total, c.count]);
         row.eachCell(cell => { cell.border = borders; });

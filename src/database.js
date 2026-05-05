@@ -1,310 +1,387 @@
-const Database = require('better-sqlite3');
-const path = require('path');
-const fs = require('fs');
+const { Pool } = require('pg');
+require('dotenv').config();
 
-// Pastikan folder data ada
-const dataDir = path.join(__dirname, '..', 'data');
-if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
+const connectionString = process.env.DATABASE_URL;
+
+if (!connectionString || connectionString.includes('YOUR-PASSWORD')) {
+    console.warn("⚠️ DATABASE_URL belum diatur atau password masih kosong di .env. Menggunakan konfigurasi default untuk mencoba koneksi, tapi ini mungkin gagal.");
 }
 
-const dbPath = path.join(dataDir, 'keuangan.db');
-const db = new Database(dbPath);
+const pool = new Pool({
+    connectionString,
+    ssl: { rejectUnauthorized: false } // Diperlukan untuk koneksi ke layanan cloud seperti Supabase/Neon
+});
 
-// Enable WAL mode for better performance
-db.pragma('journal_mode = WAL');
-db.pragma('foreign_keys = ON');
+async function initDB() {
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS members (
+                id SERIAL PRIMARY KEY,
+                name TEXT NOT NULL UNIQUE,
+                telegram_id TEXT,
+                telegram_username TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
 
-// ============================================
-// TABLE CREATION
-// ============================================
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS contributions (
+                id SERIAL PRIMARY KEY,
+                member_id INTEGER NOT NULL REFERENCES members(id),
+                amount REAL NOT NULL,
+                month TEXT NOT NULL,
+                paid_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT
+            );
+        `);
 
-db.exec(`
-    CREATE TABLE IF NOT EXISTS members (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        name TEXT NOT NULL UNIQUE,
-        telegram_id TEXT,
-        telegram_username TEXT,
-        created_at TEXT DEFAULT (datetime('now', 'localtime'))
-    );
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS expenses (
+                id SERIAL PRIMARY KEY,
+                date DATE NOT NULL DEFAULT CURRENT_DATE,
+                description TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'Lainnya',
+                amount REAL NOT NULL,
+                paid_by INTEGER REFERENCES members(id),
+                receipt_image TEXT,
+                items TEXT,
+                source TEXT DEFAULT 'manual',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        `);
 
-    CREATE TABLE IF NOT EXISTS contributions (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        member_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        month TEXT NOT NULL,
-        paid_at TEXT DEFAULT (datetime('now', 'localtime')),
-        notes TEXT,
-        FOREIGN KEY (member_id) REFERENCES members(id)
-    );
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS debts (
+                id SERIAL PRIMARY KEY,
+                from_member_id INTEGER NOT NULL REFERENCES members(id),
+                to_member_id INTEGER NOT NULL REFERENCES members(id),
+                amount REAL NOT NULL,
+                reason TEXT,
+                settled INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                settled_at TIMESTAMP
+            );
+        `);
 
-    CREATE TABLE IF NOT EXISTS expenses (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        date TEXT NOT NULL DEFAULT (date('now', 'localtime')),
-        description TEXT NOT NULL,
-        category TEXT NOT NULL DEFAULT 'Lainnya',
-        amount REAL NOT NULL,
-        paid_by INTEGER,
-        receipt_image TEXT,
-        items TEXT,
-        source TEXT DEFAULT 'manual',
-        created_at TEXT DEFAULT (datetime('now', 'localtime')),
-        FOREIGN KEY (paid_by) REFERENCES members(id)
-    );
+        await client.query(`
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+        `);
 
-    CREATE TABLE IF NOT EXISTS debts (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        from_member_id INTEGER NOT NULL,
-        to_member_id INTEGER NOT NULL,
-        amount REAL NOT NULL,
-        reason TEXT,
-        settled INTEGER DEFAULT 0,
-        created_at TEXT DEFAULT (datetime('now', 'localtime')),
-        settled_at TEXT,
-        FOREIGN KEY (from_member_id) REFERENCES members(id),
-        FOREIGN KEY (to_member_id) REFERENCES members(id)
-    );
+        // Seed data members
+        const membersList = ['Gentha', 'Nopal', 'Roni', 'Ikbal'];
+        for (const name of membersList) {
+            await client.query('INSERT INTO members (name) VALUES ($1) ON CONFLICT (name) DO NOTHING', [name]);
+        }
 
-    CREATE TABLE IF NOT EXISTS settings (
-        key TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-    );
-`);
+        // Seed data settings
+        const defaultSettings = {
+            monthly_contribution: '0',
+            monthly_budget: '0',
+            weekly_budget: '0',
+            currency: 'Rp',
+            kos_name: 'Kos Kita'
+        };
+        for (const [key, value] of Object.entries(defaultSettings)) {
+            await client.query('INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO NOTHING', [key, value]);
+        }
 
-// ============================================
-// SEED DATA - Anggota Kos
-// ============================================
-
-const members = ['Gentha', 'Nopal', 'Roni', 'Ikbal'];
-const insertMember = db.prepare('INSERT OR IGNORE INTO members (name) VALUES (?)');
-members.forEach(name => insertMember.run(name));
-
-// Default settings
-const defaultSettings = {
-    monthly_contribution: '0',
-    monthly_budget: '0',
-    weekly_budget: '0',
-    currency: 'Rp',
-    kos_name: 'Kos Kita'
-};
-
-const insertSetting = db.prepare('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)');
-Object.entries(defaultSettings).forEach(([key, value]) => insertSetting.run(key, value));
+        await client.query('COMMIT');
+        console.log("✅ Database berhasil diinisialisasi (PostgreSQL)");
+    } catch (e) {
+        await client.query('ROLLBACK');
+        console.error("❌ Gagal inisialisasi database:", e);
+        throw e;
+    } finally {
+        client.release();
+    }
+}
 
 // ============================================
 // MEMBER QUERIES
 // ============================================
-
 const memberQueries = {
-    getAll: db.prepare('SELECT * FROM members ORDER BY name'),
-    getById: db.prepare('SELECT * FROM members WHERE id = ?'),
-    getByName: db.prepare('SELECT * FROM members WHERE LOWER(name) = LOWER(?)'),
-    getByTelegramId: db.prepare('SELECT * FROM members WHERE telegram_id = ?'),
-    updateTelegramId: db.prepare('UPDATE members SET telegram_id = ?, telegram_username = ? WHERE id = ?'),
+    getAll: async () => (await pool.query('SELECT * FROM members ORDER BY name')).rows,
+    getById: async (id) => (await pool.query('SELECT * FROM members WHERE id = $1', [id])).rows[0],
+    getByName: async (name) => (await pool.query('SELECT * FROM members WHERE LOWER(name) = LOWER($1)', [name])).rows[0],
+    getByTelegramId: async (id) => (await pool.query('SELECT * FROM members WHERE telegram_id = $1', [id])).rows[0],
+    updateTelegramId: async (telegramId, username, id) => await pool.query('UPDATE members SET telegram_id = $1, telegram_username = $2 WHERE id = $3', [telegramId, username, id])
 };
 
 // ============================================
 // EXPENSE QUERIES
 // ============================================
-
 const expenseQueries = {
-    insert: db.prepare(`
-        INSERT INTO expenses (date, description, category, amount, paid_by, receipt_image, items, source)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `),
-    getAll: db.prepare(`
-        SELECT e.*, m.name as paid_by_name
-        FROM expenses e
-        LEFT JOIN members m ON e.paid_by = m.id
-        ORDER BY e.date DESC, e.created_at DESC
-    `),
-    getByDateRange: db.prepare(`
-        SELECT e.*, m.name as paid_by_name
-        FROM expenses e
-        LEFT JOIN members m ON e.paid_by = m.id
-        WHERE e.date BETWEEN ? AND ?
-        ORDER BY e.date DESC, e.created_at DESC
-    `),
-    getByCategory: db.prepare(`
-        SELECT e.*, m.name as paid_by_name
-        FROM expenses e
-        LEFT JOIN members m ON e.paid_by = m.id
-        WHERE e.category = ?
-        ORDER BY e.date DESC
-    `),
-    getWeeklySummary: db.prepare(`
-        SELECT 
-            strftime('%Y-W%W', date) as week,
-            MIN(date) as week_start,
-            MAX(date) as week_end,
-            SUM(amount) as total,
-            COUNT(*) as count
-        FROM expenses
-        WHERE date >= date('now', 'localtime', '-8 weeks')
-        GROUP BY strftime('%Y-W%W', date)
-        ORDER BY week ASC
-    `),
-    getMonthlySummary: db.prepare(`
-        SELECT 
-            strftime('%Y-%m', date) as month,
-            SUM(amount) as total,
-            COUNT(*) as count
-        FROM expenses
-        WHERE date >= date('now', 'localtime', '-12 months')
-        GROUP BY strftime('%Y-%m', date)
-        ORDER BY month ASC
-    `),
-    getCategorySummary: db.prepare(`
-        SELECT 
-            category,
-            SUM(amount) as total,
-            COUNT(*) as count
-        FROM expenses
-        WHERE created_at >= date('now', 'localtime', 'start of month')
-        GROUP BY category
-        ORDER BY total DESC
-    `),
-    getMemberSummary: db.prepare(`
-        SELECT 
-            m.name,
-            m.id as member_id,
-            COALESCE(SUM(e.amount), 0) as total,
-            COUNT(e.id) as count
-        FROM members m
-        LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date('now', 'localtime', 'start of month')
-        GROUP BY m.id
-        ORDER BY total DESC
-    `),
-    getWeeklyMemberSummary: db.prepare(`
-        SELECT 
-            m.name,
-            m.id as member_id,
-            COALESCE(SUM(e.amount), 0) as total,
-            COUNT(e.id) as count
-        FROM members m
-        LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date('now', 'localtime', 'weekday 0', '-7 days')
-        GROUP BY m.id
-        ORDER BY total DESC
-    `),
-    getThisMonthTotal: db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM expenses
-        WHERE created_at >= date('now', 'localtime', 'start of month')
-    `),
-    getThisWeekTotal: db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM expenses
-        WHERE created_at >= date('now', 'localtime', 'weekday 0', '-7 days')
-    `),
-    getRecent: db.prepare(`
-        SELECT e.*, m.name as paid_by_name
-        FROM expenses e
-        LEFT JOIN members m ON e.paid_by = m.id
-        ORDER BY e.created_at DESC
-        LIMIT ?
-    `),
-    deleteById: db.prepare('DELETE FROM expenses WHERE id = ?'),
-    getDailyTotals: db.prepare(`
-        SELECT date, SUM(amount) as total, COUNT(*) as count
-        FROM expenses
-        WHERE date BETWEEN ? AND ?
-        GROUP BY date
-        ORDER BY date ASC
-    `),
+    insert: async (date, description, category, amount, paid_by, receipt_image, items, source) => {
+        const query = `
+            INSERT INTO expenses (date, description, category, amount, paid_by, receipt_image, items, source)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *
+        `;
+        return (await pool.query(query, [date, description, category, amount, paid_by, receipt_image, items, source])).rows[0];
+    },
+    getAll: async () => {
+        const query = `
+            SELECT e.*, m.name as paid_by_name
+            FROM expenses e
+            LEFT JOIN members m ON e.paid_by = m.id
+            ORDER BY e.date DESC, e.created_at DESC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getByDateRange: async (start, end) => {
+        const query = `
+            SELECT e.*, m.name as paid_by_name
+            FROM expenses e
+            LEFT JOIN members m ON e.paid_by = m.id
+            WHERE e.date BETWEEN $1 AND $2
+            ORDER BY e.date DESC, e.created_at DESC
+        `;
+        return (await pool.query(query, [start, end])).rows;
+    },
+    getByCategory: async (category) => {
+        const query = `
+            SELECT e.*, m.name as paid_by_name
+            FROM expenses e
+            LEFT JOIN members m ON e.paid_by = m.id
+            WHERE e.category = $1
+            ORDER BY e.date DESC
+        `;
+        return (await pool.query(query, [category])).rows;
+    },
+    getWeeklySummary: async () => {
+        const query = `
+            SELECT 
+                TO_CHAR(date, 'IYYY-IW') as week,
+                MIN(date) as week_start,
+                MAX(date) as week_end,
+                SUM(amount) as total,
+                COUNT(*) as count
+            FROM expenses
+            WHERE date >= CURRENT_DATE - INTERVAL '8 weeks'
+            GROUP BY TO_CHAR(date, 'IYYY-IW')
+            ORDER BY week ASC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getMonthlySummary: async () => {
+        const query = `
+            SELECT 
+                TO_CHAR(date, 'YYYY-MM') as month,
+                SUM(amount) as total,
+                COUNT(*) as count
+            FROM expenses
+            WHERE date >= CURRENT_DATE - INTERVAL '12 months'
+            GROUP BY TO_CHAR(date, 'YYYY-MM')
+            ORDER BY month ASC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getCategorySummary: async () => {
+        const query = `
+            SELECT 
+                category,
+                SUM(amount) as total,
+                COUNT(*) as count
+            FROM expenses
+            WHERE created_at >= date_trunc('month', CURRENT_DATE)
+            GROUP BY category
+            ORDER BY total DESC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getMemberSummary: async () => {
+        const query = `
+            SELECT 
+                m.name,
+                m.id as member_id,
+                COALESCE(SUM(e.amount), 0) as total,
+                COUNT(e.id) as count
+            FROM members m
+            LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date_trunc('month', CURRENT_DATE)
+            GROUP BY m.id, m.name
+            ORDER BY total DESC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getWeeklyMemberSummary: async () => {
+        const query = `
+            SELECT 
+                m.name,
+                m.id as member_id,
+                COALESCE(SUM(e.amount), 0) as total,
+                COUNT(e.id) as count
+            FROM members m
+            LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date_trunc('week', CURRENT_DATE)
+            GROUP BY m.id, m.name
+            ORDER BY total DESC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    getThisMonthTotal: async () => {
+        const query = `
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM expenses
+            WHERE created_at >= date_trunc('month', CURRENT_DATE)
+        `;
+        return (await pool.query(query)).rows[0] || { total: 0 };
+    },
+    getThisWeekTotal: async () => {
+        const query = `
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM expenses
+            WHERE created_at >= date_trunc('week', CURRENT_DATE)
+        `;
+        return (await pool.query(query)).rows[0] || { total: 0 };
+    },
+    getRecent: async (limit) => {
+        const query = `
+            SELECT e.*, m.name as paid_by_name
+            FROM expenses e
+            LEFT JOIN members m ON e.paid_by = m.id
+            ORDER BY e.created_at DESC
+            LIMIT $1
+        `;
+        return (await pool.query(query, [limit])).rows;
+    },
+    deleteById: async (id) => {
+        await pool.query('DELETE FROM expenses WHERE id = $1', [id]);
+    },
+    getDailyTotals: async (start, end) => {
+        const query = `
+            SELECT date, SUM(amount) as total, COUNT(*) as count
+            FROM expenses
+            WHERE date BETWEEN $1 AND $2
+            GROUP BY date
+            ORDER BY date ASC
+        `;
+        return (await pool.query(query, [start, end])).rows;
+    }
 };
 
 // ============================================
 // CONTRIBUTION QUERIES
 // ============================================
-
 const contributionQueries = {
-    insert: db.prepare(`
-        INSERT INTO contributions (member_id, amount, month, notes)
-        VALUES (?, ?, ?, ?)
-    `),
-    getByMonth: db.prepare(`
-        SELECT c.*, m.name
-        FROM contributions c
-        JOIN members m ON c.member_id = m.id
-        WHERE c.month = ?
-        ORDER BY c.paid_at
-    `),
-    getStatusByMonth: db.prepare(`
-        SELECT 
-            m.id, m.name,
-            CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as paid,
-            c.amount, c.paid_at
-        FROM members m
-        LEFT JOIN contributions c ON m.id = c.member_id AND c.month = ?
-        ORDER BY m.name
-    `),
-    getTotalByMonth: db.prepare(`
-        SELECT COALESCE(SUM(amount), 0) as total
-        FROM contributions
-        WHERE month = ?
-    `),
-    getHistory: db.prepare(`
-        SELECT c.*, m.name
-        FROM contributions c
-        JOIN members m ON c.member_id = m.id
-        ORDER BY c.month DESC, c.paid_at DESC
-        LIMIT ?
-    `),
+    insert: async (member_id, amount, month, notes) => {
+        const query = `
+            INSERT INTO contributions (member_id, amount, month, notes)
+            VALUES ($1, $2, $3, $4)
+        `;
+        await pool.query(query, [member_id, amount, month, notes]);
+    },
+    getByMonth: async (month) => {
+        const query = `
+            SELECT c.*, m.name
+            FROM contributions c
+            JOIN members m ON c.member_id = m.id
+            WHERE c.month = $1
+            ORDER BY c.paid_at
+        `;
+        return (await pool.query(query, [month])).rows;
+    },
+    getStatusByMonth: async (month) => {
+        const query = `
+            SELECT 
+                m.id, m.name,
+                CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END as paid,
+                c.amount, c.paid_at
+            FROM members m
+            LEFT JOIN contributions c ON m.id = c.member_id AND c.month = $1
+            ORDER BY m.name
+        `;
+        return (await pool.query(query, [month])).rows;
+    },
+    getTotalByMonth: async (month) => {
+        const query = `
+            SELECT COALESCE(SUM(amount), 0) as total
+            FROM contributions
+            WHERE month = $1
+        `;
+        return (await pool.query(query, [month])).rows[0] || { total: 0 };
+    },
+    getHistory: async (limit) => {
+        const query = `
+            SELECT c.*, m.name
+            FROM contributions c
+            JOIN members m ON c.member_id = m.id
+            ORDER BY c.month DESC, c.paid_at DESC
+            LIMIT $1
+        `;
+        return (await pool.query(query, [limit])).rows;
+    }
 };
 
 // ============================================
 // DEBT QUERIES
 // ============================================
-
 const debtQueries = {
-    insert: db.prepare(`
-        INSERT INTO debts (from_member_id, to_member_id, amount, reason)
-        VALUES (?, ?, ?, ?)
-    `),
-    getActive: db.prepare(`
-        SELECT d.*, 
-            mf.name as from_name,
-            mt.name as to_name
-        FROM debts d
-        JOIN members m1 ON d.from_member_id = m1.id
-        JOIN members mf ON d.from_member_id = mf.id
-        JOIN members mt ON d.to_member_id = mt.id
-        WHERE d.settled = 0
-        ORDER BY d.created_at DESC
-    `),
-    settle: db.prepare(`
-        UPDATE debts SET settled = 1, settled_at = datetime('now', 'localtime')
-        WHERE id = ?
-    `),
+    insert: async (from_member_id, to_member_id, amount, reason) => {
+        const query = `
+            INSERT INTO debts (from_member_id, to_member_id, amount, reason)
+            VALUES ($1, $2, $3, $4)
+        `;
+        await pool.query(query, [from_member_id, to_member_id, amount, reason]);
+    },
+    getActive: async () => {
+        const query = `
+            SELECT d.*, 
+                mf.name as from_name,
+                mt.name as to_name
+            FROM debts d
+            JOIN members mf ON d.from_member_id = mf.id
+            JOIN members mt ON d.to_member_id = mt.id
+            WHERE d.settled = 0
+            ORDER BY d.created_at DESC
+        `;
+        return (await pool.query(query)).rows;
+    },
+    settle: async (id) => {
+        await pool.query('UPDATE debts SET settled = 1, settled_at = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+    }
 };
 
 // ============================================
 // SETTINGS QUERIES
 // ============================================
-
 const settingQueries = {
-    get: db.prepare('SELECT value FROM settings WHERE key = ?'),
-    set: db.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)'),
-    getAll: db.prepare('SELECT * FROM settings'),
+    get: async (key) => {
+        const row = (await pool.query('SELECT value FROM settings WHERE key = $1', [key])).rows[0];
+        return row ? row.value : null;
+    },
+    set: async (key, value) => {
+        await pool.query(`
+            INSERT INTO settings (key, value) VALUES ($1, $2)
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+        `, [key, String(value)]);
+    },
+    getAll: async () => {
+        return (await pool.query('SELECT * FROM settings')).rows;
+    }
 };
 
 // ============================================
 // HELPER FUNCTIONS
 // ============================================
-
-function getSetting(key) {
-    const row = settingQueries.get.get(key);
-    return row ? row.value : null;
+async function getSetting(key) {
+    return await settingQueries.get(key);
 }
 
-function setSetting(key, value) {
-    settingQueries.set.run(key, String(value));
+async function setSetting(key, value) {
+    await settingQueries.set(key, value);
 }
 
-function getBalance() {
+async function getBalance() {
     const currentMonth = new Date().toISOString().slice(0, 7);
-    const totalContributions = contributionQueries.getTotalByMonth.get(currentMonth)?.total || 0;
-    const totalExpenses = expenseQueries.getThisMonthTotal.get()?.total || 0;
+    const totalContrRow = await contributionQueries.getTotalByMonth(currentMonth);
+    const totalExpRow = await expenseQueries.getThisMonthTotal();
+    
+    const totalContributions = totalContrRow.total || 0;
+    const totalExpenses = totalExpRow.total || 0;
     return {
         contributions: totalContributions,
         expenses: totalExpenses,
@@ -312,23 +389,49 @@ function getBalance() {
     };
 }
 
-function getDashboardData() {
+async function getDashboardData() {
     const currentMonth = new Date().toISOString().slice(0, 7);
-    const balance = getBalance();
-    const weeklyData = expenseQueries.getWeeklySummary.all();
-    const categoryData = expenseQueries.getCategorySummary.all();
-    const memberData = expenseQueries.getMemberSummary.all();
-    const weeklyMemberData = expenseQueries.getWeeklyMemberSummary.all();
-    const recentExpenses = expenseQueries.getRecent.all(20);
-    const contributionStatus = contributionQueries.getStatusByMonth.all(currentMonth);
-    const monthlyTrend = expenseQueries.getMonthlySummary.all();
-    const weekTotal = expenseQueries.getThisWeekTotal.get()?.total || 0;
-    const monthTotal = expenseQueries.getThisMonthTotal.get()?.total || 0;
-    const activeDebts = debtQueries.getActive.all();
-    const members = memberQueries.getAll.all();
-    const budget = parseFloat(getSetting('monthly_budget')) || 0;
-    const weeklyBudget = parseFloat(getSetting('weekly_budget')) || 0;
-    const contribution = parseFloat(getSetting('monthly_contribution')) || 0;
+    
+    // Execute all queries in parallel for better performance
+    const [
+        balance,
+        weeklyData,
+        categoryData,
+        memberData,
+        weeklyMemberData,
+        recentExpenses,
+        contributionStatus,
+        monthlyTrend,
+        weekTotalRow,
+        monthTotalRow,
+        activeDebts,
+        members,
+        budgetSetting,
+        weeklyBudgetSetting,
+        contributionSetting
+    ] = await Promise.all([
+        getBalance(),
+        expenseQueries.getWeeklySummary(),
+        expenseQueries.getCategorySummary(),
+        expenseQueries.getMemberSummary(),
+        expenseQueries.getWeeklyMemberSummary(),
+        expenseQueries.getRecent(20),
+        contributionQueries.getStatusByMonth(currentMonth),
+        expenseQueries.getMonthlySummary(),
+        expenseQueries.getThisWeekTotal(),
+        expenseQueries.getThisMonthTotal(),
+        debtQueries.getActive(),
+        memberQueries.getAll(),
+        getSetting('monthly_budget'),
+        getSetting('weekly_budget'),
+        getSetting('monthly_contribution')
+    ]);
+
+    const weekTotal = weekTotalRow.total || 0;
+    const monthTotal = monthTotalRow.total || 0;
+    const budget = parseFloat(budgetSetting) || 0;
+    const weeklyBudget = parseFloat(weeklyBudgetSetting) || 0;
+    const contribution = parseFloat(contributionSetting) || 0;
 
     return {
         balance,
@@ -352,7 +455,8 @@ function getDashboardData() {
 }
 
 module.exports = {
-    db,
+    pool,
+    initDB,
     memberQueries,
     expenseQueries,
     contributionQueries,
