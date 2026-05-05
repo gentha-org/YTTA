@@ -13,7 +13,7 @@ const {
 } = require('./database');
 const { scanReceipt, parseManualInput, autoCategorizee } = require('./ocr');
 const { generateReport } = require('./excel');
-const { createBot } = require('./bot');
+const { createBot, getBot } = require('./bot');
 const { initScheduler } = require('./scheduler');
 
 const app = express();
@@ -184,6 +184,30 @@ app.put('/api/debts/:id/settle', (req, res) => {
     try {
         debtQueries.settle.run(parseInt(req.params.id));
         res.json({ success: true, message: 'Hutang dilunasi' });
+    } catch (err) {
+        res.status(500).json({ success: false, error: err.message });
+    }
+});
+
+app.post('/api/ping-debt', (req, res) => {
+    try {
+        const { id } = req.body;
+        const debts = debtQueries.getActive.all();
+        const debt = debts.find(d => d.id === parseInt(id));
+        if (!debt) return res.status(404).json({ success: false, error: 'Hutang tidak ditemukan' });
+
+        const bot = getBot();
+        if (!bot) return res.status(500).json({ success: false, error: 'Bot tidak aktif' });
+
+        const groupChatId = process.env.TELEGRAM_GROUP_CHAT_ID;
+        if (!groupChatId || groupChatId === 'GANTI_DENGAN_CHAT_ID_GRUP') {
+            return res.status(400).json({ success: false, error: 'Grup chat ID belum disetting di .env' });
+        }
+
+        const message = `🔔 *PENGINGAT HUTANG*\n\nHalo ${debt.from_name}, jangan lupa ada catatan hutang ke ${debt.to_name} sebesar *Rp ${debt.amount.toLocaleString('id-ID')}* ya.\n📝 Keterangan: ${debt.reason || '-'}`;
+        
+        bot.sendMessage(groupChatId, message, { parse_mode: 'Markdown' });
+        res.json({ success: true, message: 'Notifikasi terkirim ke grup' });
     } catch (err) {
         res.status(500).json({ success: false, error: err.message });
     }

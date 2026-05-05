@@ -83,6 +83,7 @@ members.forEach(name => insertMember.run(name));
 const defaultSettings = {
     monthly_contribution: '0',
     monthly_budget: '0',
+    weekly_budget: '0',
     currency: 'Rp',
     kos_name: 'Kos Kita'
 };
@@ -171,6 +172,17 @@ const expenseQueries = {
             COUNT(e.id) as count
         FROM members m
         LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date('now', 'localtime', 'start of month')
+        GROUP BY m.id
+        ORDER BY total DESC
+    `),
+    getWeeklyMemberSummary: db.prepare(`
+        SELECT 
+            m.name,
+            m.id as member_id,
+            COALESCE(SUM(e.amount), 0) as total,
+            COUNT(e.id) as count
+        FROM members m
+        LEFT JOIN expenses e ON m.id = e.paid_by AND e.created_at >= date('now', 'localtime', 'weekday 0', '-7 days')
         GROUP BY m.id
         ORDER BY total DESC
     `),
@@ -306,6 +318,7 @@ function getDashboardData() {
     const weeklyData = expenseQueries.getWeeklySummary.all();
     const categoryData = expenseQueries.getCategorySummary.all();
     const memberData = expenseQueries.getMemberSummary.all();
+    const weeklyMemberData = expenseQueries.getWeeklyMemberSummary.all();
     const recentExpenses = expenseQueries.getRecent.all(20);
     const contributionStatus = contributionQueries.getStatusByMonth.all(currentMonth);
     const monthlyTrend = expenseQueries.getMonthlySummary.all();
@@ -314,6 +327,7 @@ function getDashboardData() {
     const activeDebts = debtQueries.getActive.all();
     const members = memberQueries.getAll.all();
     const budget = parseFloat(getSetting('monthly_budget')) || 0;
+    const weeklyBudget = parseFloat(getSetting('weekly_budget')) || 0;
     const contribution = parseFloat(getSetting('monthly_contribution')) || 0;
 
     return {
@@ -321,11 +335,14 @@ function getDashboardData() {
         weekTotal,
         monthTotal,
         budget,
+        weeklyBudget,
         contribution,
         budgetPercentage: budget > 0 ? Math.round((monthTotal / budget) * 100) : 0,
+        weeklyBudgetPercentage: weeklyBudget > 0 ? Math.round((weekTotal / weeklyBudget) * 100) : 0,
         weeklyData,
         categoryData,
         memberData,
+        weeklyMemberData,
         recentExpenses,
         contributionStatus,
         monthlyTrend,

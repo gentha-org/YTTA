@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // Load default view data
     loadDashboard();
     loadMembersForSelects();
+    loadSettings();
     
     // Set default date input to today
     document.getElementById('exp-date').valueAsDate = new Date();
@@ -59,7 +60,7 @@ function switchView(viewId) {
     if (viewId === 'dashboard') loadDashboard();
     else if (viewId === 'transaksi') loadExpenses();
     else if (viewId === 'iuran') loadContributions();
-    // else if (viewId === 'hutang') loadDebts();
+    else if (viewId === 'hutang') loadDebts();
     else if (viewId === 'pengaturan') loadSettings();
 }
 
@@ -105,6 +106,8 @@ async function loadMembersForSelects() {
             document.getElementById('exp-member').innerHTML = options;
             document.getElementById('scan-member').innerHTML = options;
             document.getElementById('contrib-member').innerHTML = options;
+            document.getElementById('debt-from').innerHTML = options;
+            document.getElementById('debt-to').innerHTML = options;
         }
     } catch (e) {
         console.error("Error loading members", e);
@@ -131,6 +134,13 @@ async function loadDashboard() {
         if(pct > 90) pBar.style.background = 'var(--danger)';
         else pBar.style.background = 'linear-gradient(90deg, var(--primary), var(--secondary))';
 
+        const weekPct = data.weeklyBudgetPercentage || 0;
+        document.getElementById('stat-week-pct').innerText = `${weekPct}% (${formatRp(data.weekTotal)})`;
+        const wpBar = document.getElementById('weekly-budget-progress');
+        wpBar.style.width = `${Math.min(weekPct, 100)}%`;
+        if(weekPct > 90) wpBar.style.background = 'var(--danger)';
+        else wpBar.style.background = 'linear-gradient(90deg, var(--warning), #fbbf24)';
+
         // Update Recent Table
         const tbody = document.querySelector('#recent-expenses-table tbody');
         if (data.recentExpenses.length === 0) {
@@ -145,6 +155,29 @@ async function loadDashboard() {
                     <td>${e.paid_by_name || '-'}</td>
                 </tr>
             `).join('');
+        }
+
+        // Update Leaderboard
+        if (data.memberData && data.memberData.length > 0) {
+            const boros = data.memberData[0];
+            const hemat = data.memberData[data.memberData.length - 1];
+
+            document.getElementById('leader-boros-name').innerText = boros.name;
+            document.getElementById('leader-boros-amount').innerText = formatRp(boros.total);
+
+            document.getElementById('leader-hemat-name').innerText = hemat.name;
+            document.getElementById('leader-hemat-amount').innerText = formatRp(hemat.total);
+        }
+
+        if (data.weeklyMemberData && data.weeklyMemberData.length > 0) {
+            const wBoros = data.weeklyMemberData[0];
+            const wHemat = data.weeklyMemberData[data.weeklyMemberData.length - 1];
+
+            document.getElementById('leader-week-boros-name').innerText = wBoros.name;
+            document.getElementById('leader-week-boros-amount').innerText = formatRp(wBoros.total);
+
+            document.getElementById('leader-week-hemat-name').innerText = wHemat.name;
+            document.getElementById('leader-week-hemat-amount').innerText = formatRp(wHemat.total);
         }
 
         // --- Render Charts ---
@@ -229,14 +262,57 @@ async function loadContributions() {
     }
 }
 
+async function loadDebts() {
+    try {
+        const res = await fetch(`${API_URL}/debts`);
+        const json = await res.json();
+        
+        const container = document.getElementById('debts-list');
+        if (!json.success || json.data.length === 0) {
+            container.innerHTML = '<div class="text-center" style="grid-column: 1/-1; padding: 20px;">Belum ada catatan hutang.</div>';
+            return;
+        }
+
+        container.innerHTML = json.data.map(d => `
+            <div class="c-card" style="display:flex; flex-direction:column; gap:10px;">
+                <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+                    <div>
+                        <h3 style="margin-bottom: 5px">${d.from_name} <span style="color:var(--text-muted)">➔</span> ${d.to_name}</h3>
+                        <h2 class="text-danger">${formatRp(d.amount)}</h2>
+                        <p class="text-muted" style="font-size:0.85rem; margin-top:5px;">📅 ${formatDate(d.created_at)}</p>
+                        <p class="text-muted" style="font-size:0.85rem">📝 ${d.reason || '-'}</p>
+                    </div>
+                    <div style="display:flex; flex-direction:column; gap:5px; align-items:flex-end;">
+                        <span class="badge" style="background:rgba(239, 68, 68, 0.2); color:var(--danger); font-size:0.75rem; padding:4px 8px; border-radius:4px;">BELUM LUNAS</span>
+                        <div style="display:flex; gap:5px; margin-top:10px;">
+                            <button class="btn btn-sm btn-secondary" onclick="pingDebt(${d.id})" style="font-size:0.8rem; padding:6px 12px;" title="Kirim notif ke Telegram Grup">🔔 Tagih</button>
+                            <button class="btn btn-sm btn-primary" onclick="settleDebt(${d.id})" style="font-size:0.8rem; padding:6px 12px;">Tandai Lunas</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) {
+        console.error("Gagal load hutang", e);
+    }
+}
+
 async function loadSettings() {
     try {
         const res = await fetch(`${API_URL}/settings`);
         const json = await res.json();
         const data = json.data;
         
+        if (data.kos_name) document.getElementById('set-kos-name').value = data.kos_name;
         if (data.monthly_budget) document.getElementById('set-budget').value = data.monthly_budget;
+        if (data.weekly_budget) document.getElementById('set-weekly-budget').value = data.weekly_budget;
         if (data.monthly_contribution) document.getElementById('set-contribution').value = data.monthly_contribution;
+        
+        // Update header UI globally
+        if (data.kos_name) {
+            document.querySelector('.logo h1').innerText = data.kos_name;
+            document.querySelector('.greeting h2').innerText = `Halo, Warga ${data.kos_name}! 👋`;
+        }
     } catch (e) {
         console.error(e);
     }
@@ -513,10 +589,67 @@ async function deleteExpense(id) {
     }
 }
 
+async function submitDebt(e) {
+    e.preventDefault();
+    const payload = {
+        from_member_id: document.getElementById('debt-from').value,
+        to_member_id: document.getElementById('debt-to').value,
+        amount: document.getElementById('debt-amount').value,
+        reason: document.getElementById('debt-reason').value
+    };
+
+    if (payload.from_member_id === payload.to_member_id) {
+        return alert("Peminjam dan Pemberi tidak boleh orang yang sama!");
+    }
+
+    try {
+        const res = await fetch(`${API_URL}/debts`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if(res.ok) {
+            alert("Hutang berhasil dicatat!");
+            closeModal('add-debt-modal');
+            document.getElementById('debt-form').reset();
+            loadDebts();
+        } else {
+            const err = await res.json();
+            alert("Gagal: " + err.error);
+        }
+    } catch(e) { alert("Error menyimpan hutang"); }
+}
+
+async function settleDebt(id) {
+    if(confirm("Tandai hutang ini sebagai LUNAS?")) {
+        try {
+            await fetch(`${API_URL}/debts/${id}/settle`, { method: 'PUT' });
+            loadDebts();
+        } catch(e) { alert("Error"); }
+    }
+}
+
+async function pingDebt(id) {
+    try {
+        const res = await fetch(`${API_URL}/ping-debt`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ id })
+        });
+        const data = await res.json();
+        if(res.ok) alert("Berhasil! " + data.message);
+        else alert("Gagal: " + data.error);
+    } catch(e) {
+        alert("Error menghubungi server.");
+    }
+}
+
 async function saveSettings(e) {
     e.preventDefault();
     const payload = {
+        kos_name: document.getElementById('set-kos-name').value,
         monthly_budget: document.getElementById('set-budget').value,
+        weekly_budget: document.getElementById('set-weekly-budget').value,
         monthly_contribution: document.getElementById('set-contribution').value
     };
     try {
@@ -527,6 +660,9 @@ async function saveSettings(e) {
         });
         if(res.ok) {
             alert("Pengaturan disimpan!");
+            // Update UI immediately
+            document.querySelector('.logo h1').innerText = payload.kos_name;
+            document.querySelector('.greeting h2').innerText = `Halo, Warga ${payload.kos_name}! 👋`;
             loadDashboard(); // Refresh budget bar
         }
     } catch(e) { alert("Error menyimpan pengaturan"); }
